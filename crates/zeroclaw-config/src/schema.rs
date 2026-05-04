@@ -9696,6 +9696,81 @@ fn expand_tilde_path(path: &str) -> PathBuf {
     PathBuf::from(expanded_str)
 }
 
+async fn resolve_workspace_dir_from_config(config_dir: &Path) -> Option<PathBuf> {
+    let config_path = config_dir.join("config.toml");
+    if !config_path.exists() {
+        return None;
+    }
+
+    let contents = match fs::read_to_string(&config_path).await {
+        Ok(contents) => contents,
+        Err(error) => {
+            tracing::warn!(
+                path = %config_path.display(),
+                "Failed to read config while resolving workspace isolation: {error}"
+            );
+            return None;
+        }
+    };
+
+    let mut table: toml::Table = match toml::from_str(&contents) {
+        Ok(table) => table,
+        Err(error) => {
+            tracing::warn!(
+                path = %config_path.display(),
+                "Failed to parse config while resolving workspace isolation: {error}"
+            );
+            return None;
+        }
+    };
+    crate::migration::prepare_table(&mut table);
+    let table_str = match toml::to_string(&table) {
+        Ok(table_str) => table_str,
+        Err(error) => {
+            tracing::warn!(
+                path = %config_path.display(),
+                "Failed to normalize config while resolving workspace isolation: {error}"
+            );
+            return None;
+        }
+    };
+    let compat: crate::migration::V1Compat = match toml::from_str(&table_str) {
+        Ok(compat) => compat,
+        Err(error) => {
+            tracing::warn!(
+                path = %config_path.display(),
+                "Failed to deserialize config while resolving workspace isolation: {error}"
+            );
+            return None;
+        }
+    };
+    let config: Config = compat.into_config();
+
+    if !config.workspace.enabled {
+        return None;
+    }
+
+    let active_workspace = config
+        .workspace
+        .active_workspace
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let workspaces_dir = config.workspace.workspaces_dir.trim();
+    if workspaces_dir.is_empty() {
+        return None;
+    }
+
+    let workspaces_dir = expand_tilde_path(workspaces_dir);
+    let workspaces_dir = if workspaces_dir.is_absolute() {
+        workspaces_dir
+    } else {
+        config_dir.join(workspaces_dir)
+    };
+
+    Some(workspaces_dir.join(active_workspace).join("workspace"))
+}
+
 async fn resolve_runtime_config_dirs(
     default_zeroclaw_dir: &Path,
     default_workspace_dir: &Path,
@@ -9704,9 +9779,12 @@ async fn resolve_runtime_config_dirs(
         let custom_config_dir = custom_config_dir.trim();
         if !custom_config_dir.is_empty() {
             let zeroclaw_dir = expand_tilde_path(custom_config_dir);
+            let workspace_dir = resolve_workspace_dir_from_config(&zeroclaw_dir)
+                .await
+                .unwrap_or_else(|| zeroclaw_dir.join("workspace"));
             return Ok((
                 zeroclaw_dir.clone(),
-                zeroclaw_dir.join("workspace"),
+                workspace_dir,
                 ConfigResolutionSource::EnvConfigDir,
             ));
         }
@@ -14762,6 +14840,44 @@ model = "primary-model"
         );
 
         // SAFETY: test-only, single-threaded test runner.
+        unsafe { std::env::remove_var("ZEROCLAW_CONFIG_DIR") };
+        let _ = fs::remove_dir_all(default_config_dir).await;
+    }
+
+    #[test]
+    async fn resolve_runtime_config_dirs_uses_active_workspace_from_env_config_dir() {
+        let _env_guard = env_override_lock().await;
+        let default_config_dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        let default_workspace_dir = default_config_dir.join("workspace");
+        let explicit_config_dir = default_config_dir.join("explicit-config");
+
+        fs::create_dir_all(&explicit_config_dir).await.unwrap();
+        fs::write(
+            explicit_config_dir.join("config.toml"),
+            r#"[workspace]
+enabled = true
+workspaces_dir = "/zeroclaw-data/workspaces"
+active_workspace = "personal"
+"#,
+        )
+        .await
+        .unwrap();
+
+        unsafe { std::env::set_var("ZEROCLAW_CONFIG_DIR", &explicit_config_dir) };
+        unsafe { std::env::remove_var("ZEROCLAW_WORKSPACE") };
+
+        let (config_dir, resolved_workspace_dir, source) =
+            resolve_runtime_config_dirs(&default_config_dir, &default_workspace_dir)
+                .await
+                .unwrap();
+
+        assert_eq!(source, ConfigResolutionSource::EnvConfigDir);
+        assert_eq!(config_dir, explicit_config_dir);
+        assert_eq!(
+            resolved_workspace_dir,
+            PathBuf::from("/zeroclaw-data/workspaces/personal/workspace")
+        );
+
         unsafe { std::env::remove_var("ZEROCLAW_CONFIG_DIR") };
         let _ = fs::remove_dir_all(default_config_dir).await;
     }
