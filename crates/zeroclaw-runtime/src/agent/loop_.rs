@@ -2374,7 +2374,7 @@ pub async fn run(
         "image_info",
         "Read image file metadata (format, dimensions, size) and optionally base64-encode it. Use when: inspecting images, preparing visual data for analysis.",
     ));
-    if config.browser.enabled {
+    if config.browser.enabled && !config.browser.backend.eq_ignore_ascii_case("rust_native") {
         tool_descs.push((
             "browser_open",
             "Open approved HTTPS URLs in system browser (allowlist-only, no scraping)",
@@ -3306,7 +3306,7 @@ pub async fn process_message(
             "Load the full source for an available skill by name.",
         ));
     }
-    if config.browser.enabled {
+    if config.browser.enabled && !config.browser.backend.eq_ignore_ascii_case("rust_native") {
         tool_descs.push(("browser_open", "Open approved URLs in browser."));
     }
     if config.composio.enabled {

@@ -1485,12 +1485,12 @@ mod native_backend {
                 args.push(Value::String("--disable-gpu".to_string()));
             }
 
-            // When running as a service (systemd/OpenRC), the browser sandbox
-            // fails because the process lacks a user namespace / session.
-            // --no-sandbox and --disable-dev-shm-usage are required in this context.
+            if headless || super::is_service_environment() {
+                args.push(Value::String("--disable-dev-shm-usage".to_string()));
+            }
+
             if super::is_service_environment() {
                 args.push(Value::String("--no-sandbox".to_string()));
-                args.push(Value::String("--disable-dev-shm-usage".to_string()));
             }
 
             if !args.is_empty() {
@@ -1730,7 +1730,7 @@ mod native_backend {
             .unwrap_or_else(|| "null".to_string());
 
         format!(
-            r#"(() => {{
+            r#"return (() => {{
   const interactiveOnly = {interactive_only};
   const compact = {compact};
   const maxDepth = {depth_literal};
@@ -2152,6 +2152,13 @@ fn is_service_environment() -> bool {
         return true;
     }
     if std::env::var_os("JOURNAL_STREAM").is_some() {
+        return true;
+    }
+    #[cfg(target_os = "linux")]
+    if std::path::Path::new("/.dockerenv").exists()
+        || std::path::Path::new("/run/.containerenv").exists()
+        || std::env::var_os("container").is_some()
+    {
         return true;
     }
     #[cfg(target_os = "linux")]

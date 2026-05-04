@@ -448,11 +448,17 @@ pub fn all_tools_with_runtime(
     }
 
     if browser_config.enabled {
-        // Add legacy browser_open tool for simple URL opening
-        tool_arcs.push(Arc::new(BrowserOpenTool::new(
-            security.clone(),
-            browser_config.allowed_domains.clone(),
-        )));
+        // In rust_native mode the browser automation tool owns navigation,
+        // and exposing browser_open encourages headless containers to route
+        // URL opens through xdg-open instead of the WebDriver backend.
+        // Keep browser_open disabled and rely on the full BrowserTool instead.
+        if !browser_config.backend.eq_ignore_ascii_case("rust_native") {
+            // Add legacy browser_open tool for simple URL opening
+            tool_arcs.push(Arc::new(BrowserOpenTool::new(
+                security.clone(),
+                browser_config.allowed_domains.clone(),
+            )));
+        }
         // Add full browser automation tool (pluggable backend)
         tool_arcs.push(Arc::new(BrowserTool::new_with_backend(
             security.clone(),
