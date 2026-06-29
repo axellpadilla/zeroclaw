@@ -1,0 +1,56 @@
+diff --git a/crates/zeroclaw-runtime/src/agent/loop_.rs b/crates/zeroclaw-runtime/src/agent/loop_.rs
+index ac747b719..70675ecf8 100644
+--- a/crates/zeroclaw-runtime/src/agent/loop_.rs
++++ b/crates/zeroclaw-runtime/src/agent/loop_.rs
+@@ -1424,11 +1424,18 @@ pub async fn run_tool_call_loop(
+             }
+         };
+ 
+-        let display_text = if parsed_text.is_empty() {
++        let mut display_text = if parsed_text.is_empty() {
+             response_text.clone()
+         } else {
+             parsed_text
+         };
++
++        // Suppress intermediate narrated reasoning on tool-call turns.
++        // Models may emit planning text before structured tool calls; showing it
++        // creates noisy output and can leak internal reasoning patterns.
++        if !tool_calls.is_empty() {
++            display_text.clear();
++        };
+         // ── Progress: LLM responded ─────────────────────────────
+         if let Some(ref tx) = on_delta {
+             let llm_secs = llm_started_at.elapsed().as_secs();
+@@ -1487,8 +1494,11 @@ pub async fn run_tool_call_loop(
+                 }
+             }
+ 
+-            history.push(ChatMessage::assistant(response_text.clone()));
+-            return Ok(accumulated_display_text);
++            history.push(ChatMessage::assistant(display_text.clone()));
++            return Ok(append_receipt_footer(
++                accumulated_display_text,
++                collected_receipts,
++            ));
+         }
+ 
+         // Accumulate text from this iteration (tool calls present, loop continues).
+diff --git a/crates/zeroclaw-runtime/src/tools/skill_tool.rs b/crates/zeroclaw-runtime/src/tools/skill_tool.rs
+index d998fb80c..60e21eae2 100644
+--- a/crates/zeroclaw-runtime/src/tools/skill_tool.rs
++++ b/crates/zeroclaw-runtime/src/tools/skill_tool.rs
+@@ -152,6 +152,13 @@ impl Tool for SkillShellTool {
+             }
+         }
+ 
++        // Also pass any extra vars whitelisted via autonomy.shell_env_passthrough
++        for var in &self.security.shell_env_passthrough {
++            if let Ok(val) = std::env::var(var) {
++                cmd.env(var, val);
++            }
++        }
++
+         let result =
+             tokio::time::timeout(Duration::from_secs(SKILL_SHELL_TIMEOUT_SECS), cmd.output()).await;
+ 
